@@ -13,6 +13,7 @@ def build_midi_tempo_map(midi_file):
     ticks_per_beat = midi_file.ticks_per_beat
 
     for msg in midi_file:
+        # Calculate time since last message
         delta_time_sec = mido.tick2second(msg.time, ticks_per_beat, current_tempo)
         cumulative_time += delta_time_sec
         cumulative_ticks += msg.time
@@ -36,7 +37,7 @@ def get_measure_start_times(score, tempo_map):
 
     for measure in measures:
         # Check for tempo changes in the MIDI tempo map
-        if tempo_index < len(tempo_map) and current_time >= tempo_map[tempo_index]['time']:
+        while tempo_index < len(tempo_map) and current_time >= tempo_map[tempo_index]['time']:
             current_tempo = tempo_map[tempo_index]['tempo']
             tempo_index += 1
 
@@ -84,7 +85,7 @@ def split_musicxml(musicxml_file, split_points, measures_per_segment, output_dir
 
         # Check if the segment contains any measures
         if len(segment_score.parts[0].getElementsByClass('Measure')) == 0:
-            print(f"Warning: No measures found for segment {seg_num + 1}.")
+            print(f"Warning: No measures found for MusicXML segment {seg_num + 1}.")
             continue
 
         output_file = os.path.join(output_dir, f"segment_{seg_num + 1:03d}.mxl")
@@ -92,7 +93,7 @@ def split_musicxml(musicxml_file, split_points, measures_per_segment, output_dir
             segment_score.write('musicxml', output_file)
             print(f"Saved MusicXML segment: {output_file}")
         except Exception as e:
-            print(f"Error writing segment {seg_num + 1}: {str(e)}")
+            print(f"Error writing MusicXML segment {seg_num + 1}: {str(e)}")
             continue
 
 def split_midi(input_midi_path, split_points, output_dir):
@@ -109,7 +110,7 @@ def split_midi(input_midi_path, split_points, output_dir):
         cumulative_ticks = 0
         cumulative_time = 0.0
         current_tempo = 500000  # Default tempo
-        for i, tempo_event in enumerate(tempo_map):
+        for tempo_event in tempo_map:
             if time_point < tempo_event['time']:
                 delta_time_sec = time_point - cumulative_time
                 delta_ticks = mido.second2tick(delta_time_sec, ticks_per_beat, current_tempo)
@@ -129,13 +130,19 @@ def split_midi(input_midi_path, split_points, output_dir):
 
         split_points_ticks.append(int(cumulative_ticks))
 
-    midi_file_name = os.path.splitext(os.path.basename(input_midi_path))[0]
-    output_subdir = os.path.join(output_dir, midi_file_name)
-    os.makedirs(output_subdir, exist_ok=True)
+    # Calculate total ticks in MIDI file
+    total_ticks = sum(msg.time for msg in midi_file)
+    print(f"Total MIDI ticks: {total_ticks}")
+
+    # Ensure the last split point includes all ticks
+    if split_points_ticks[-1] < total_ticks:
+        split_points_ticks.append(total_ticks)
+        print(f"Added total ticks as final split point: {total_ticks}")
 
     num_segments = len(split_points_ticks) - 1
+    print(f"Number of MIDI segments: {num_segments}")
 
-    # For each segment, create a list to hold messages per track
+    # Initialize segments
     segments = [ [ [] for _ in midi_file.tracks ] for _ in range(num_segments) ]
 
     # Process each track
@@ -146,7 +153,7 @@ def split_midi(input_midi_path, split_points, output_dir):
             abs_tick += msg.time
             messages.append((abs_tick, msg.copy()))
 
-        # Now, assign messages to segments
+        # Assign messages to segments
         msg_index = 0
         for segment_index in range(num_segments):
             segment_start_tick = split_points_ticks[segment_index]
@@ -164,7 +171,9 @@ def split_midi(input_midi_path, split_points, output_dir):
                     delta_time = abs_msg_tick - segment_start_tick
                 else:
                     delta_time = abs_msg_tick - messages[msg_index - 1][0]
-                msg.time = max(int(delta_time), 0)
+                # Ensure delta time is non-negative
+                delta_time = max(int(delta_time), 0)
+                msg.time = delta_time
                 segment_msgs.append(msg)
                 msg_index += 1
 
@@ -180,10 +189,10 @@ def split_midi(input_midi_path, split_points, output_dir):
             new_track.append(MetaMessage('end_of_track', time=0))
             segment_midi.tracks.append(new_track)
         if empty_segment:
-            print(f"Warning: No MIDI events found for segment {segment_index + 1}. Skipping empty segment.")
+            print(f"Warning: No MIDI events found for MIDI segment {segment_index + 1}. Skipping empty segment.")
             continue
         segment_number = segment_index + 1
-        output_filename = os.path.join(output_subdir, f"segment_{segment_number:03d}.mid")
+        output_filename = os.path.join(output_dir, f"segment_{segment_number:03d}.mid")
         segment_midi.save(output_filename)
         print(f"Saved MIDI segment: {output_filename}")
 
@@ -191,8 +200,8 @@ def process_directory(musicxml_dir, midi_dir, output_base_dir, measures_per_segm
     """Processes all files in the directories and splits them into segments based on measures."""
     musicxml_output_dir = os.path.join(output_base_dir, "MusicXML_segments")
     midi_output_dir = os.path.join(output_base_dir, "MIDI_segments")
-    if not os.path.exists(musicxml_output_dir): os.makedirs(musicxml_output_dir, exist_ok=True)
-    if not os.path.exists(midi_output_dir): os.makedirs(midi_output_dir, exist_ok=True)
+    os.makedirs(musicxml_output_dir, exist_ok=True)
+    os.makedirs(midi_output_dir, exist_ok=True)
 
     musicxml_files = [f for f in os.listdir(musicxml_dir) if f.endswith('.mxl') or f.endswith('.musicxml')]
 
@@ -215,17 +224,15 @@ def process_directory(musicxml_dir, midi_dir, output_base_dir, measures_per_segm
         midi_output_subdir = os.path.join(midi_output_dir, base_name)
 
         # Create output directories
-        if os.path.exists(musicxml_output_subdir) and os.path.exists(midi_output_subdir): 
-            print(f"Skipping {base_name}: Already segmented.")
-            continue 
         os.makedirs(musicxml_output_subdir, exist_ok=True)
         os.makedirs(midi_output_subdir, exist_ok=True)
 
         try:
             # Parse the MusicXML file
             score = converter.parse(musicxml_path)
-            num_measures = len(score.parts[0].getElementsByClass('Measure'))
-            print(f"Total measures in {base_name}: {num_measures}")
+            measures_list = list(score.parts[0].getElementsByClass('Measure'))
+            total_measures = len(measures_list)
+            print(f"Total measures in {base_name}: {total_measures}")
 
             # Load MIDI file and build tempo map
             midi_file = mido.MidiFile(midi_path)
@@ -236,6 +243,7 @@ def process_directory(musicxml_dir, midi_dir, output_base_dir, measures_per_segm
 
             # Calculate split points based on measures per segment
             split_points = calculate_split_points(measure_times, measures_per_segment)
+            print(f"Split points (seconds): {split_points}")
 
             # Split MusicXML
             split_musicxml(musicxml_path, split_points, measures_per_segment, musicxml_output_subdir)
